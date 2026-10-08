@@ -137,6 +137,10 @@ public class DatabaseIndexingManager {
         // Drop the database when the locale or build has changed. This eliminates rows which are
         // dynamically inserted in the old language, or deprecated settings.
         final SQLiteDatabase db = getWritableDatabase();
+        if (db == null) {
+            Log.w(TAG, "Cannot rebuild database as I cannot get a writable database");
+            return;
+        }
         IndexDatabaseHelper.getInstance(mContext).reconstruct(db);
     }
 
@@ -366,7 +370,11 @@ public class DatabaseIndexingManager {
 
         @Override
         protected Void doInBackground(Void... voids) {
-            performIndexing();
+            try {
+                performIndexing();
+            } catch (RuntimeException e) {
+                Log.e(TAG, "Indexing failed", e);
+            }
             return null;
         }
 

@@ -90,16 +90,25 @@ public class PreIndexDataCollector {
             final String authority = info.providerInfo.authority;
             final String packageName = info.providerInfo.packageName;
 
-            if (isFullIndex) {
-                addIndexablesFromRemoteProvider(packageName, authority);
-            }
+            try {
+                if (isFullIndex) {
+                    addIndexablesFromRemoteProvider(packageName, authority);
+                }
 
-            final long nonIndexableStartTime = System.currentTimeMillis();
-            addNonIndexablesKeysFromRemoteProvider(packageName, authority);
-            if (SearchFeatureProvider.DEBUG) {
-                final long nonIndexableTime = System.currentTimeMillis() - nonIndexableStartTime;
-                Log.d(TAG, "performIndexing update non-indexable for package " + packageName
-                        + " took time: " + nonIndexableTime);
+                final long nonIndexableStartTime = System.currentTimeMillis();
+                addNonIndexablesKeysFromRemoteProvider(packageName, authority);
+                if (SearchFeatureProvider.DEBUG) {
+                    final long nonIndexableTime =
+                            System.currentTimeMillis() - nonIndexableStartTime;
+                    Log.d(TAG, "performIndexing update non-indexable for package "
+                            + packageName + " took time: " + nonIndexableTime);
+                }
+            } catch (SecurityException e) {
+                Log.w(TAG, "Skipping provider " + authority + " (" + packageName
+                        + "): access denied: " + e.getMessage());
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Skipping provider " + authority + " (" + packageName
+                        + ") due to error", e);
             }
         }
 
@@ -107,25 +116,29 @@ public class PreIndexDataCollector {
     }
 
     private void addIndexablesFromRemoteProvider(String packageName, String authority) {
+        final Context context;
         try {
-            final Context context = mContext.createPackageContext(packageName, 0);
-
-            final Uri uriForResources = buildUriForXmlResources(authority);
-            mIndexData.addDataToUpdate(authority, getIndexablesForXmlResourceUri(
-                    context, packageName, uriForResources,
-                    SearchIndexablesContract.INDEXABLES_XML_RES_COLUMNS));
-
-            final Uri uriForRawData = buildUriForRawData(authority);
-            mIndexData.addDataToUpdate(authority, getIndexablesForRawDataUri(
-                    context, packageName, uriForRawData,
-                    SearchIndexablesContract.INDEXABLES_RAW_COLUMNS));
-
-            final Uri uriForSiteMap = buildUriForSiteMap(authority);
-            mIndexData.addSiteMapPairs(getSiteMapFromProvider(context, uriForSiteMap));
+            context = mContext.createPackageContext(packageName, 0);
         } catch (PackageManager.NameNotFoundException e) {
             Log.w(TAG, "Could not create context for " + packageName + ": "
                     + Log.getStackTraceString(e));
+            return;
         }
+
+        final List<SearchIndexableResource> xmlResources = getIndexablesForXmlResourceUri(
+                context, packageName, buildUriForXmlResources(authority),
+                SearchIndexablesContract.INDEXABLES_XML_RES_COLUMNS);
+
+        final List<SearchIndexableRaw> rawData = getIndexablesForRawDataUri(
+                context, packageName, buildUriForRawData(authority),
+                SearchIndexablesContract.INDEXABLES_RAW_COLUMNS);
+
+        final List<Pair<String, String>> siteMapPairs =
+                getSiteMapFromProvider(context, buildUriForSiteMap(authority));
+
+        mIndexData.addDataToUpdate(authority, xmlResources);
+        mIndexData.addDataToUpdate(authority, rawData);
+        mIndexData.addSiteMapPairs(siteMapPairs);
     }
 
     @VisibleForTesting
@@ -283,13 +296,20 @@ public class PreIndexDataCollector {
         }
         final List<Pair<String, String>> siteMapPairs = new ArrayList<>();
         try {
+            final int parentIndex = cursor.getColumnIndex(
+                    IndexDatabaseHelper.SiteMapColumns.PARENT_CLASS);
+            final int childIndex = cursor.getColumnIndex(
+                    IndexDatabaseHelper.SiteMapColumns.CHILD_CLASS);
+            if (parentIndex < 0 || childIndex < 0) {
+                Log.w(TAG, "Site map cursor missing columns from "
+                        + packageContext.getPackageName());
+                return siteMapPairs;
+            }
             final int count = cursor.getCount();
             if (count > 0) {
                 while (cursor.moveToNext()) {
-                    final String parentClass = cursor.getString(cursor.getColumnIndex(
-                            IndexDatabaseHelper.SiteMapColumns.PARENT_CLASS));
-                    final String childClass = cursor.getString(cursor.getColumnIndex(
-                            IndexDatabaseHelper.SiteMapColumns.CHILD_CLASS));
+                    final String parentClass = cursor.getString(parentIndex);
+                    final String childClass = cursor.getString(childIndex);
                     if (TextUtils.isEmpty(parentClass)  || TextUtils.isEmpty(childClass)) {
                         Log.w(TAG, "Incomplete site map pair: " + parentClass + "/" + childClass);
                         continue;
@@ -322,9 +342,11 @@ public class PreIndexDataCollector {
                 while (cursor.moveToNext()) {
                     final String key = cursor.getString(COLUMN_INDEX_NON_INDEXABLE_KEYS_KEY_VALUE);
 
-                    if (TextUtils.isEmpty(key) && Log.isLoggable(TAG, Log.VERBOSE)) {
-                        Log.v(TAG, "Empty non-indexable key from: "
-                                + packageContext.getPackageName());
+                    if (TextUtils.isEmpty(key)) {
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "Empty non-indexable key from: "
+                                    + packageContext.getPackageName());
+                        }
                         continue;
                     }
 
